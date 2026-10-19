@@ -253,10 +253,28 @@ def read_csv(path):
     return posts
 
 
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+    "Accept-Language": "ru,en;q=0.9",
+}
+
+
 def read_rss(src):
     if re.match(r"https?://", src):
-        req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0 tilda2zen"})
-        data = urllib.request.urlopen(req, timeout=60).read()
+        last = None
+        for attempt in range(3):                 # Cloudflare Тильды иногда отдаёт 403 — повторим
+            try:
+                req = urllib.request.Request(src, headers=BROWSER_HEADERS)
+                data = urllib.request.urlopen(req, timeout=60).read()
+                break
+            except Exception as e:
+                last = e
+                import time
+                time.sleep(3)
+        else:
+            raise last
     else:
         data = open(src, "rb").read()
     soup = BeautifulSoup(data, "xml")
@@ -334,11 +352,16 @@ def load_state(path):
 
 
 def merge_sources(seed_csv, rss_src):
-    """Объединяет бэклог из CSV и новые посты из живого RSS. CSV в приоритете (полнее)."""
+    """Объединяет бэклог из CSV и новые посты из живого RSS. CSV в приоритете (полнее).
+    Сбой RSS (403 от Cloudflare, таймаут) не фатален — продолжаем по seed + кэшу."""
     pool = {}
     if rss_src:
-        for p in read_rss(rss_src):
-            pool[p["id"]] = p
+        try:
+            for p in read_rss(rss_src):
+                pool[p["id"]] = p
+        except Exception as e:
+            print(f"ВНИМАНИЕ: RSS Тильды недоступен ({e}). Работаю по seed + кэшу, "
+                  f"новые посты подхватятся при следующем удачном запросе.")
     if seed_csv:
         for p in read_csv(seed_csv):   # перезаписывает RSS-версию более полной CSV
             pool[p["id"]] = p
@@ -351,7 +374,15 @@ def drip(seed_csv, rss_src, state_path, out_path, now=None):
     now = now or datetime.now(MSK)
     state = load_state(state_path)
     released = state.setdefault("released", {})   # id -> ISO-дата выдачи
+    cache = state.setdefault("cache", {})         # id -> данные поста (чтобы лента не зависела от источника)
     pool = {i: p for i, p in merge_sources(seed_csv, rss_src).items() if i not in EXCLUDE_IDS}
+
+    # освежаем кэш данными из доступных источников
+    for i, p in pool.items():
+        cache[i] = {"title": p["title"], "link": p["link"],
+                    "description": p.get("description", ""),
+                    "html": p["html"], "cover": p.get("cover"),
+                    "orig_date": p["date"].isoformat()}
 
     unreleased = sorted((p for i, p in pool.items() if i not in released),
                         key=lambda p: p["date"], reverse=True)   # новые — первыми в очереди
@@ -368,12 +399,16 @@ def drip(seed_csv, rss_src, state_path, out_path, now=None):
             released[p["id"]] = now.isoformat()
             newly.append(p)
 
+    # лента строится из КЭША — выданная статья не пропадёт, даже если источник временно недоступен
     out_posts = []
     for i, iso in released.items():
-        if i in pool:                       # пост мог быть удалён на сайте — тогда просто не выводим
-            q = dict(pool[i])
-            q["date"] = datetime.fromisoformat(iso)   # pubDate = дата выдачи
-            out_posts.append(q)
+        c = cache.get(i)
+        if not c:
+            continue
+        out_posts.append({"id": i, "title": c["title"], "link": c["link"],
+                          "description": c.get("description", ""),
+                          "html": c["html"], "cover": c.get("cover"),
+                          "date": datetime.fromisoformat(iso)})   # pubDate = дата выдачи
     out_posts.sort(key=lambda p: p["date"], reverse=True)
     out_posts = out_posts[:FEED_KEEP]
 
