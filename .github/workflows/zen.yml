@@ -25,4 +25,4 @@ jobs:
       - name: Build zen.xml
         run: python tilda2zen.py --drip --seed tilda_feed.csv --rss https://meatsiders.ru/rss-feed-814038631341.xml --state published.json -o zen.xml --check-images
       - name: Commit if changed
-        run: git diff --quiet -- zen.xml published.json || (git config user.name "zen-bot" && git config user.email "zen-bot@users.noreply.github.com" && git add zen.xml published.json && git commit -m "update zen feed" && git push)
+        run: git add zen.xml published.json && (git diff --cached --quiet || (git config user.name "zen-bot" && git config user.email "zen-bot@users.noreply.github.com" && git commit -m "update zen feed" && git push))
