@@ -43,10 +43,21 @@ CHANNEL_TITLE = "Meatsiders — блог"
 CHANNEL_DESC = "Мясные деликатесы собственного производства: истории продуктов, рецепты, подборки."
 UTM = {"utm_source": "dzen", "utm_medium": "article"}   # пустой dict = без меток
 CATEGORIES = ["format-article", "index", "comment-all"]
-EXCLUDE_IDS = {          # посты, которые не нужны в Дзене (устаревшие объявления)
+EXCLUDE_IDS = {          # посты, которые не нужны в Дзене
     "j1gk1sgsu1",        # График работы на праздниках
     "zxhg6us7n1",        # График работы на майских праздниках
     "71izgh48g1",        # Новогодние наборы (сезонное, <300 знаков)
+    "dxudxfydx1",        # Билтонг — опубликован вручную (есть показы), лентой не дублируем
+}
+# Статьи, которые Дзен отбросил при импорте (были датированы задним числом).
+# Для них guid меняется, чтобы Дзен принял их как новые при повторной выдаче.
+REPUBLISH_IDS = {
+    "i9bo9exmf1",  # Чоризо в нарезке
+    "b5hp4xcn41",  # Какой мясной набор выбрать в подарок
+    "hmbcy5jmt1",  # Мергез
+    "ocx2cnkef1",  # Оленина холодного копчения
+    "cjbsercyn1",  # Орехи к пиву и вину
+    "gpsxf2vii1",  # Фаберцы
 }
 MAX_ITEMS = 500          # лимит Дзена на одну отправку
 CTA_TEXT = "Купить на сайте Meatsiders →"
@@ -54,8 +65,8 @@ CTA_TEXT = "Купить на сайте Meatsiders →"
 # --- постепенная выдача (режим --drip) ---
 MSK = timezone(timedelta(hours=3))
 INITIAL_BATCH = 10       # сколько отдать при самом первом запуске (минимум Дзена)
-MIN_INTERVAL_HOURS = 48  # пауза между выдачей следующих статей (~3 в неделю)
-INITIAL_SPREAD_DAYS = 1  # шаг дат внутри стартовой десятки, чтобы не вышла пачка одной минутой
+MIN_INTERVAL_HOURS = 24  # пауза между выдачей следующих статей (1 статья в день)
+ORDER_OLD_FIRST = True   # True — бэклог от старых к новым; False — сначала самые свежие
 FEED_KEEP = 60           # сколько последних статей держать в ленте
 
 # ------------------------------------------------------------ транслит Тильды
@@ -315,10 +326,11 @@ def build(posts):
         cover = p["cover"] or (images[0] if images else None)
         cats = "".join(f"<category>{c}</category>" for c in CATEGORIES)
         enc = f'\n      <enclosure url="{escape(cover)}" type="{mime(cover)}"/>' if cover else ""
+        gid = p["id"] + "-r2" if p["id"] in REPUBLISH_IDS else p["id"]   # свежий guid для переизданных
         items.append(f"""    <item>
       <title>{escape(p['title'])}</title>
       <link>{escape(p['link'])}</link>
-      <guid isPermaLink="false">{escape(p['id'])}</guid>
+      <guid isPermaLink="false">{escape(gid)}</guid>
       <pubDate>{format_datetime(p['date'])}</pubDate>
       <description>{escape(p['description'])}</description>
       {cats}{enc}
@@ -384,13 +396,15 @@ def drip(seed_csv, rss_src, state_path, out_path, now=None):
                     "html": p["html"], "cover": p.get("cover"),
                     "orig_date": p["date"].isoformat()}
 
+    # порядок очереди: от старых к новым (ORDER_OLD_FIRST) или сначала самые свежие
     unreleased = sorted((p for i, p in pool.items() if i not in released),
-                        key=lambda p: p["date"], reverse=True)   # новые — первыми в очереди
+                        key=lambda p: p["date"], reverse=not ORDER_OLD_FIRST)
 
     newly = []
     if not released:
-        for k, p in enumerate(unreleased[:INITIAL_BATCH]):
-            released[p["id"]] = (now - timedelta(days=k * INITIAL_SPREAD_DAYS)).isoformat()
+        # первый запуск: 10 статей текущей датой (без задним числом — иначе Дзен их отбросит)
+        for p in unreleased[:INITIAL_BATCH]:
+            released[p["id"]] = now.isoformat()
             newly.append(p)
     elif unreleased:
         last = max(datetime.fromisoformat(t) for t in released.values())
